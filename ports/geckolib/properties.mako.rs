@@ -2,10 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// STYLE_STRUCTS comes from components/style/properties.mako.rs; see build.rs for more details.
+// `data` comes from components/style/properties.mako.rs; see build.rs for more details.
 
 use app_units::Au;
-% for style_struct in STYLE_STRUCTS:
+% for style_struct in data.style_structs:
 %if style_struct.gecko_ffi_name:
 use gecko_style_structs::${style_struct.gecko_ffi_name};
 use bindings::Gecko_Construct_${style_struct.gecko_ffi_name};
@@ -26,7 +26,7 @@ use style::properties::style_struct_traits::*;
 
 #[derive(Clone)]
 pub struct GeckoComputedValues {
-    % for style_struct in STYLE_STRUCTS:
+    % for style_struct in data.style_structs:
     ${style_struct.ident}: Arc<${style_struct.gecko_struct_name}>,
     % endfor
 
@@ -37,7 +37,7 @@ pub struct GeckoComputedValues {
 }
 
 impl ComputedValues for GeckoComputedValues {
-% for style_struct in STYLE_STRUCTS:
+% for style_struct in data.style_structs:
     type Concrete${style_struct.trait_name} = ${style_struct.gecko_struct_name};
 % endfor
 
@@ -49,7 +49,7 @@ impl ComputedValues for GeckoComputedValues {
            shareable: bool,
            writing_mode: WritingMode,
            root_font_size: Au,
-            % for style_struct in STYLE_STRUCTS:
+            % for style_struct in data.style_structs:
            ${style_struct.ident}: Arc<${style_struct.gecko_struct_name}>,
             % endfor
     ) -> Self {
@@ -58,7 +58,7 @@ impl ComputedValues for GeckoComputedValues {
             shareable: shareable,
             writing_mode: writing_mode,
             root_font_size: root_font_size,
-            % for style_struct in STYLE_STRUCTS:
+            % for style_struct in data.style_structs:
             ${style_struct.ident}: ${style_struct.ident},
             % endfor
         }
@@ -70,7 +70,7 @@ impl ComputedValues for GeckoComputedValues {
         CASCADE_PROPERTY.with(|x| f(x));
     }
 
-    % for style_struct in STYLE_STRUCTS:
+    % for style_struct in data.style_structs:
     #[inline]
     fn clone_${style_struct.trait_name_lower}(&self) -> Arc<Self::Concrete${style_struct.trait_name}> {
         self.${style_struct.ident}.clone()
@@ -180,13 +180,13 @@ impl ${style_struct.trait_name} for ${style_struct.gecko_struct_name} {
 }
 </%def>
 
-<%! MANUAL_STYLE_STRUCTS = [] %>
+<% data.manual_style_structs = [] %>
 <%def name="impl_trait(style_struct_name, skip_longhands=None, skip_additionals=None)">
-<%self:raw_impl_trait style_struct="${next(x for x in STYLE_STRUCTS if x.trait_name == style_struct_name)}"
+<%self:raw_impl_trait style_struct="${next(x for x in data.style_structs if x.trait_name == style_struct_name)}"
                       skip_longhands="${skip_longhands}" skip_additionals="${skip_additionals}">
 ${caller.body()}
 </%self:raw_impl_trait>
-<% MANUAL_STYLE_STRUCTS.append(style_struct_name) %>
+<% data.manual_style_structs.append(style_struct_name) %>
 </%def>
 
 // Proof-of-concept for a style struct with some manually-implemented methods. We add
@@ -213,17 +213,17 @@ ${caller.body()}
     }
 </%self:impl_trait>
 
-% for style_struct in STYLE_STRUCTS:
+% for style_struct in data.style_structs:
 ${declare_style_struct(style_struct)}
 ${impl_style_struct(style_struct)}
-% if not style_struct.trait_name in MANUAL_STYLE_STRUCTS:
+% if not style_struct.trait_name in data.manual_style_structs:
 <%self:raw_impl_trait style_struct="${style_struct}"></%self:raw_impl_trait>
 % endif
 % endfor
 
 lazy_static! {
     pub static ref INITIAL_GECKO_VALUES: GeckoComputedValues = GeckoComputedValues {
-        % for style_struct in STYLE_STRUCTS:
+        % for style_struct in data.style_structs:
            ${style_struct.ident}: Arc::new(${style_struct.gecko_struct_name}::initial()),
         % endfor
         custom_properties: None,

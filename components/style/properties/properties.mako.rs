@@ -37,168 +37,23 @@ use values::specified::BorderStyle;
 use self::property_bit_field::PropertyBitField;
 
 <%!
-
-import re
-
-def to_rust_ident(name):
-    name = name.replace("-", "_")
-    if name in ["static", "super", "box", "move"]:  # Rust keywords
-        name += "_"
-    return name
-
-def to_camel_case(ident):
-    return re.sub("_([a-z])", lambda m: m.group(1).upper(), ident.strip("_").capitalize())
-
-class Keyword(object):
-    def __init__(self, name, values, extra_gecko_values=None, extra_servo_values=None):
-        self.name = name
-        self.values = values
-        self.extra_gecko_values = extra_gecko_values or []
-        self.extra_servo_values = extra_servo_values or []
-    def gecko_values(self):
-        return self.values + self.extra_gecko_values
-    def servo_values(self):
-        return self.values + self.extra_servo_values
-    def values_for(self, product):
-        if product == "gecko":
-            return self.gecko_values()
-        elif product == "servo":
-            return self.servo_values()
-        else:
-            raise Exception("Bad product: " + product)
-
-class Longhand(object):
-    def __init__(self, name, derived_from=None, keyword=None,
-                 custom_cascade=False, experimental=False, internal=False):
-        self.name = name
-        self.keyword = keyword
-        self.ident = to_rust_ident(name)
-        self.camel_case = to_camel_case(self.ident)
-        self.style_struct = THIS_STYLE_STRUCT
-        self.experimental = ("layout.%s.enabled" % name) if experimental else None
-        self.custom_cascade = custom_cascade
-        self.internal = internal
-        if derived_from is None:
-            self.derived_from = None
-        else:
-            self.derived_from = [ to_rust_ident(name) for name in derived_from ]
-
-class Shorthand(object):
-    def __init__(self, name, sub_properties, experimental=False, internal=False):
-        self.name = name
-        self.ident = to_rust_ident(name)
-        self.camel_case = to_camel_case(self.ident)
-        self.derived_from = None
-        self.experimental = ("layout.%s.enabled" % name) if experimental else None
-        self.sub_properties = [LONGHANDS_BY_NAME[s] for s in sub_properties]
-        self.internal = internal
-
-class Method(object):
-    def __init__(self, name, return_type=None, arg_types=None, is_mut=False):
-        self.name = name
-        self.return_type = return_type
-        self.arg_types = arg_types or []
-        self.is_mut = is_mut
-    def arg_list(self):
-        args = ["_: " + x for x in self.arg_types]
-        args = ["&mut self" if self.is_mut else "&self"] + args
-        return ", ".join(args)
-    def signature(self):
-        sig = "fn %s(%s)" % (self.name, self.arg_list())
-        if self.return_type:
-            sig = sig + " -> " + self.return_type
-        return sig
-    def declare(self):
-        return self.signature() + ";"
-    def stub(self):
-        return self.signature() + "{ unimplemented!() }"
-
-class StyleStruct(object):
-    def __init__(self, name, inherited, gecko_ffi_name, additional_methods):
-        self.servo_struct_name = "Servo" + name
-        self.gecko_struct_name = "Gecko" + name
-        self.trait_name = name
-        self.trait_name_lower = name.lower()
-        self.ident = to_rust_ident(self.trait_name_lower)
-        self.longhands = []
-        self.inherited = inherited
-        self.gecko_ffi_name = gecko_ffi_name
-        self.additional_methods = additional_methods or []
-
-STYLE_STRUCTS = []
-THIS_STYLE_STRUCT = None
-LONGHANDS = []
-LONGHANDS_BY_NAME = {}
-DERIVED_LONGHANDS = {}
-SHORTHANDS = []
-CONFIG = {}
-
-def set_product(p):
-    global CONFIG
-    CONFIG['product'] = p
-
-def new_style_struct(name, is_inherited, gecko_name=None, additional_methods=None):
-    global THIS_STYLE_STRUCT
-
-    style_struct = StyleStruct(name, is_inherited, gecko_name, additional_methods)
-    STYLE_STRUCTS.append(style_struct)
-    THIS_STYLE_STRUCT = style_struct
-    return ""
-
-def active_style_structs():
-    return filter(lambda s: s.additional_methods or s.longhands, STYLE_STRUCTS)
-
-def switch_to_style_struct(name):
-    global THIS_STYLE_STRUCT
-
-    for style_struct in STYLE_STRUCTS:
-        if style_struct.trait_name == name:
-            THIS_STYLE_STRUCT = style_struct
-            return ""
-    raise Exception("Failed to find the struct named " + name)
+    from data import Method, Keyword, to_rust_ident
 %>
-
-// Work around Mako's really annoying namespacing setup.
-//
-// The above code runs when the template is loaded, rather than when it's
-// rendered, so it can create global variables, doesn't have access to
-// arguments passed to render(). On the flip side, there are various situations,
-// such as code in the body of a def-used-as-tag, where our python code has
-// access to global variables but not to render() arguments. Hack around this
-// by stashing render arguments in a global.
-<% CONFIG['product'] = PRODUCT %>
 
 pub mod longhands {
     use cssparser::Parser;
     use parser::ParserContext;
     use values::specified;
 
-    <%def name="raw_longhand(name, keyword=None, derived_from=None, products='gecko,servo',
-                             custom_cascade=False, experimental=False, internal=False)">
-    <%
-        if not CONFIG['product'] in products:
-            return ""
-        if derived_from is not None:
-            derived_from = derived_from.split()
-
-        property = Longhand(name,
-                            derived_from=derived_from,
-                            keyword=keyword,
-                            custom_cascade=custom_cascade,
-                            experimental=experimental,
-                            internal=internal)
-        property.style_struct = THIS_STYLE_STRUCT
-        THIS_STYLE_STRUCT.longhands.append(property)
-        LONGHANDS.append(property)
-        LONGHANDS_BY_NAME[name] = property
-
-        if derived_from is not None:
-            for name in derived_from:
-                DERIVED_LONGHANDS.setdefault(name, []).append(property)
-    %>
+    <%def name="raw_longhand(*args, **kwargs)">
+        <%
+            property = data.declare_longhand(*args, **kwargs)
+            if property is None:
+                return ""
+        %>
         pub mod ${property.ident} {
             #![allow(unused_imports)]
-            % if derived_from is None:
+            % if not property.derived_from:
                 use cssparser::Parser;
                 use parser::ParserContext;
                 use properties::{CSSWideKeyword, DeclaredValue, Shorthand};
@@ -207,7 +62,7 @@ pub mod longhands {
             use properties::longhands;
             use properties::property_bit_field::PropertyBitField;
             use properties::{ComputedValues, ServoComputedValues, PropertyDeclaration};
-            use properties::style_struct_traits::${THIS_STYLE_STRUCT.trait_name};
+            use properties::style_struct_traits::${data.current_style_struct.trait_name};
             use properties::style_structs;
             use std::boxed::Box as StdBox;
             use std::collections::HashMap;
@@ -230,7 +85,7 @@ pub mod longhands {
                     }
                     _ => panic!("entered the wrong cascade_property() implementation"),
                 };
-                % if property.derived_from is None:
+                % if not property.derived_from:
                     if seen.get_${property.ident}() {
                         return
                     }
@@ -241,7 +96,7 @@ pub mod longhands {
                             declared_value, &custom_props, |value| match *value {
                                 DeclaredValue::Value(ref specified_value) => {
                                     let computed = specified_value.to_computed_value(context);
-                                    context.mutate_style().mutate_${THIS_STYLE_STRUCT.trait_name_lower}()
+                                    context.mutate_style().mutate_${data.current_style_struct.trait_name_lower}()
                                                           .set_${property.ident}(computed);
                                 }
                                 DeclaredValue::WithVariables { .. } => unreachable!(),
@@ -249,8 +104,8 @@ pub mod longhands {
                                     // We assume that it's faster to use copy_*_from rather than
                                     // set_*(get_initial_value());
                                     let initial_struct = C::initial_values()
-                                                          .get_${THIS_STYLE_STRUCT.trait_name_lower}();
-                                    context.mutate_style().mutate_${THIS_STYLE_STRUCT.trait_name_lower}()
+                                                          .get_${data.current_style_struct.trait_name_lower}();
+                                    context.mutate_style().mutate_${data.current_style_struct.trait_name_lower}()
                                                           .copy_${property.ident}_from(initial_struct);
                                 },
                                 DeclaredValue::Inherit => {
@@ -259,15 +114,15 @@ pub mod longhands {
                                     //
                                     // FIXME: is it still?
                                     *cacheable = false;
-                                    let inherited_struct = inherited_style.get_${THIS_STYLE_STRUCT.trait_name_lower}();
-                                    context.mutate_style().mutate_${THIS_STYLE_STRUCT.trait_name_lower}()
+                                    let inherited_struct = inherited_style.get_${data.current_style_struct.trait_name_lower}();
+                                    context.mutate_style().mutate_${data.current_style_struct.trait_name_lower}()
                                            .copy_${property.ident}_from(inherited_struct);
                                 }
                             }, error_reporter
                         );
                     }
 
-                    % if custom_cascade:
+                    % if property.custom_cascade:
                         cascade_property_custom(declaration,
                                                 inherited_style,
                                                 context,
@@ -279,14 +134,14 @@ pub mod longhands {
                     // Do not allow stylesheets to set derived properties.
                 % endif
             }
-            % if derived_from is None:
+            % if not property.derived_from:
                 pub fn parse_declared(context: &ParserContext, input: &mut Parser)
                                    -> Result<DeclaredValue<SpecifiedValue>, ()> {
                     match input.try(CSSWideKeyword::parse) {
                         Ok(CSSWideKeyword::InheritKeyword) => Ok(DeclaredValue::Inherit),
                         Ok(CSSWideKeyword::InitialKeyword) => Ok(DeclaredValue::Initial),
                         Ok(CSSWideKeyword::UnsetKeyword) => Ok(DeclaredValue::${
-                            "Inherit" if THIS_STYLE_STRUCT.inherited else "Initial"}),
+                            "Inherit" if data.current_style_struct.inherited else "Initial"}),
                         Err(()) => {
                             input.look_for_var_functions();
                             let start = input.position();
@@ -341,7 +196,7 @@ pub mod longhands {
             ${caller.body()}
             pub mod computed_value {
                 define_css_keyword_enum! { T:
-                    % for value in LONGHANDS_BY_NAME[name].keyword.values_for(CONFIG['product']):
+                    % for value in data.longhands_by_name[name].keyword.values_for(product):
                         "${value}" => ${to_rust_ident(value)},
                     % endfor
                 }
@@ -386,14 +241,14 @@ pub mod longhands {
 
     // CSS 2.1, Section 8 - Box model
 
-    ${new_style_struct("Margin", is_inherited=False, gecko_name="nsStyleMargin")}
+    <% data.new_style_struct("Margin", inherited=False, gecko_ffi_name="nsStyleMargin") %>
 
     % for side in ["top", "right", "bottom", "left"]:
         ${predefined_type("margin-" + side, "LengthOrPercentageOrAuto",
                           "computed::LengthOrPercentageOrAuto::Length(Au(0))")}
     % endfor
 
-    ${new_style_struct("Padding", is_inherited=False, gecko_name="nsStylePadding")}
+    <% data.new_style_struct("Padding", inherited=False, gecko_ffi_name="nsStylePadding") %>
 
     % for side in ["top", "right", "bottom", "left"]:
         ${predefined_type("padding-" + side, "LengthOrPercentage",
@@ -401,9 +256,9 @@ pub mod longhands {
                           "parse_non_negative")}
     % endfor
 
-    ${new_style_struct("Border", is_inherited=False, gecko_name="nsStyleBorder",
+    <% data.new_style_struct("Border", inherited=False, gecko_ffi_name="nsStyleBorder",
                        additional_methods=[Method("border_" + side + "_is_none_or_hidden_and_has_nonzero_width",
-                                                  "bool") for side in ["top", "right", "bottom", "left"]])}
+                                                  "bool") for side in ["top", "right", "bottom", "left"]]) %>
 
     % for side in ["top", "right", "bottom", "left"]:
         ${predefined_type("border-%s-color" % side, "CSSColor", "::cssparser::Color::CurrentColor")}
@@ -458,8 +313,8 @@ pub mod longhands {
                           "parse")}
     % endfor
 
-    ${new_style_struct("Outline", is_inherited=False, gecko_name="nsStyleOutline",
-                       additional_methods=[Method("outline_is_none_or_hidden_and_has_nonzero_width", "bool")])}
+    <% data.new_style_struct("Outline", inherited=False, gecko_ffi_name="nsStyleOutline",
+                       additional_methods=[Method("outline_is_none_or_hidden_and_has_nonzero_width", "bool")]) %>
 
     // TODO(pcwalton): `invert`
     ${predefined_type("outline-color", "CSSColor", "::cssparser::Color::CurrentColor")}
@@ -512,7 +367,7 @@ pub mod longhands {
 
     ${predefined_type("outline-offset", "Length", "Au(0)")}
 
-    ${new_style_struct("Position", is_inherited=False, gecko_name="nsStylePosition")}
+    <% data.new_style_struct("Position", inherited=False, gecko_ffi_name="nsStylePosition") %>
 
     % for side in ["top", "right", "bottom", "left"]:
         ${predefined_type(side, "LengthOrPercentageOrAuto",
@@ -521,7 +376,7 @@ pub mod longhands {
 
     // CSS 2.1, Section 9 - Visual formatting model
 
-    ${new_style_struct("Box", is_inherited=False, gecko_name="nsStyleDisplay",
+    <% data.new_style_struct("Box", inherited=False, gecko_ffi_name="nsStyleDisplay",
                        additional_methods=[Method("clone_display",
                                                   "longhands::display::computed_value::T"),
                                            Method("clone_position",
@@ -529,7 +384,7 @@ pub mod longhands {
                                            Method("is_floated", "bool"),
                                            Method("overflow_x_is_visible", "bool"),
                                            Method("overflow_y_is_visible", "bool"),
-                                           Method("transition_count", "usize")])}
+                                           Method("transition_count", "usize")]) %>
 
     // TODO(SimonSapin): don't parse `inline-table`, since we don't support it
     <%self:longhand name="display" custom_cascade="True">
@@ -640,7 +495,7 @@ pub mod longhands {
 
     </%self:longhand>
 
-    ${switch_to_style_struct("Position")}
+    <% data.switch_to_style_struct("Position") %>
 
     <%self:longhand name="z-index">
         use values::computed::ComputedValueAsSpecified;
@@ -688,19 +543,19 @@ pub mod longhands {
         }
     </%self:longhand>
 
-    ${new_style_struct("InheritedBox", is_inherited=True,
+    <% data.new_style_struct("InheritedBox", inherited=True,
                        additional_methods=[Method("clone_direction",
                                                   "longhands::direction::computed_value::T"),
                                            Method("clone_writing_mode",
                                                   "longhands::writing_mode::computed_value::T"),
                                            Method("clone_text_orientation",
-                                                  "longhands::text_orientation::computed_value::T")])}
+                                                  "longhands::text_orientation::computed_value::T")]) %>
 
     ${single_keyword("direction", "ltr rtl")}
 
     // CSS 2.1, Section 10 - Visual formatting model details
 
-    ${switch_to_style_struct("Box")}
+    <% data.switch_to_style_struct("Box") %>
 
     ${predefined_type("width", "LengthOrPercentageOrAuto",
                       "computed::LengthOrPercentageOrAuto::Auto",
@@ -710,7 +565,7 @@ pub mod longhands {
                       "computed::LengthOrPercentageOrAuto::Auto",
                       "parse_non_negative")}
 
-    ${switch_to_style_struct("Position")}
+    <% data.switch_to_style_struct("Position") %>
 
     ${predefined_type("min-width", "LengthOrPercentage",
                       "computed::LengthOrPercentage::Length(Au(0))",
@@ -726,9 +581,9 @@ pub mod longhands {
                       "computed::LengthOrPercentageOrNone::None",
                       "parse_non_negative")}
 
-    ${new_style_struct("InheritedText", is_inherited=True, gecko_name="nsStyleText",
+    <% data.new_style_struct("InheritedText", inherited=True, gecko_ffi_name="nsStyleText",
                        additional_methods=[Method("clone__servo_text_decorations_in_effect",
-                                                  "longhands::_servo_text_decorations_in_effect::computed_value::T")])}
+                                                  "longhands::_servo_text_decorations_in_effect::computed_value::T")]) %>
 
     <%self:longhand name="line-height">
         use cssparser::ToCss;
@@ -822,7 +677,7 @@ pub mod longhands {
         }
     </%self:longhand>
 
-    ${switch_to_style_struct("Box")}
+    <% data.switch_to_style_struct("Box") %>
 
     <%self:longhand name="vertical-align">
         use cssparser::ToCss;
@@ -969,14 +824,14 @@ pub mod longhands {
     // Non-standard: https://developer.mozilla.org/en-US/docs/Web/CSS/scroll-snap-type-y
     ${single_keyword("scroll-snap-type-y", "none mandatory proximity", products="gecko")}
 
-    ${switch_to_style_struct("InheritedBox")}
+    <% data.switch_to_style_struct("InheritedBox") %>
 
     // TODO: collapse. Well, do tables first.
     ${single_keyword("visibility", "visible hidden")}
 
     // CSS 2.1, Section 12 - Generated content, automatic numbering, and lists
 
-    ${new_style_struct("Counters", is_inherited=False)}
+    <% data.new_style_struct("Counters", inherited=False) %>
 
     <%self:longhand name="content">
         use cssparser::Token;
@@ -1141,7 +996,7 @@ pub mod longhands {
         }
     </%self:longhand>
 
-    ${new_style_struct("List", is_inherited=True, gecko_name="nsStyleList")}
+    <% data.new_style_struct("List", inherited=True, gecko_ffi_name="nsStyleList") %>
 
     ${single_keyword("list-style-position", "outside inside")}
 
@@ -1289,7 +1144,7 @@ pub mod longhands {
         }
     </%self:longhand>
 
-    ${switch_to_style_struct("Counters")}
+    <% data.switch_to_style_struct("Counters") %>
 
     <%self:longhand name="counter-increment">
         use std::fmt;
@@ -1371,7 +1226,7 @@ pub mod longhands {
 
     // CSS 2.1, Section 13 - Paged media
 
-    ${switch_to_style_struct("Box")}
+    <% data.switch_to_style_struct("Box") %>
 
     ${single_keyword("page-break-after", "auto always avoid left right", products="gecko")}
     ${single_keyword("page-break-before", "auto always avoid left right", products="gecko")}
@@ -1379,7 +1234,7 @@ pub mod longhands {
 
     // CSS 2.1, Section 14 - Colors and Backgrounds
 
-    ${new_style_struct("Background", is_inherited=False, gecko_name="nsStyleBackground")}
+    <% data.new_style_struct("Background", inherited=False, gecko_ffi_name="nsStyleBackground") %>
     ${predefined_type(
         "background-color", "CSSColor",
         "::cssparser::Color::RGBA(::cssparser::RGBA { red: 0., green: 0., blue: 0., alpha: 0. }) /* transparent */")}
@@ -1701,9 +1556,9 @@ pub mod longhands {
         }
     </%self:longhand>
 
-    ${new_style_struct("Color", is_inherited=True, gecko_name="nsStyleColor",
+    <% data.new_style_struct("Color", inherited=True, gecko_ffi_name="nsStyleColor",
                        additional_methods=[Method("clone_color",
-                                                  "longhands::color::computed_value::T")])}
+                                                  "longhands::color::computed_value::T")]) %>
 
     <%self:raw_longhand name="color">
         use cssparser::Color as CSSParserColor;
@@ -1743,12 +1598,12 @@ pub mod longhands {
 
     // CSS 2.1, Section 15 - Fonts
 
-    ${new_style_struct("Font", is_inherited=True, gecko_name="nsStyleFont",
+    <% data.new_style_struct("Font", inherited=True, gecko_ffi_name="nsStyleFont",
                        additional_methods=[Method("clone_font_size",
                                                   "longhands::font_size::computed_value::T"),
                                            Method("clone_font_weight",
                                                   "longhands::font_weight::computed_value::T"),
-                                           Method("compute_font_hash", is_mut=True)])}
+                                           Method("compute_font_hash", is_mut=True)]) %>
 
     <%self:longhand name="font-family">
         use self::computed_value::FontFamily;
@@ -2054,7 +1909,7 @@ pub mod longhands {
 
     // CSS 2.1, Section 16 - Text
 
-    ${switch_to_style_struct("InheritedText")}
+    <% data.switch_to_style_struct("InheritedText") %>
 
     <%self:longhand name="text-align">
         pub use self::computed_value::T as SpecifiedValue;
@@ -2244,10 +2099,10 @@ pub mod longhands {
     // TODO(pcwalton): Support `text-justify: distribute`.
     ${single_keyword("text-justify", "auto none inter-word")}
 
-    ${new_style_struct("Text", is_inherited=False, gecko_name="nsStyleTextReset",
+    <% data.new_style_struct("Text", inherited=False, gecko_ffi_name="nsStyleTextReset",
                        additional_methods=[Method("has_underline", "bool"),
                                            Method("has_overline", "bool"),
-                                           Method("has_line_through", "bool")])}
+                                           Method("has_line_through", "bool")]) %>
 
     ${single_keyword("text-overflow", "clip ellipsis")}
 
@@ -2342,7 +2197,7 @@ pub mod longhands {
     ${single_keyword("text-decoration-style", "-moz-none solid double dotted dashed wavy",
                      products="gecko")}
 
-    ${switch_to_style_struct("InheritedText")}
+    <% data.switch_to_style_struct("InheritedText") %>
 
     <%self:longhand name="-servo-text-decorations-in-effect"
                     derived_from="display text-decoration">
@@ -2478,11 +2333,11 @@ pub mod longhands {
     ${single_keyword("ruby-position", "over under", products="gecko")}
 
     // CSS 2.1, Section 17 - Tables
-    ${new_style_struct("Table", is_inherited=False, gecko_name="nsStyleTable")}
+    <% data.new_style_struct("Table", inherited=False, gecko_ffi_name="nsStyleTable") %>
 
     ${single_keyword("table-layout", "auto fixed")}
 
-    ${new_style_struct("InheritedTable", is_inherited=True)}
+    <% data.new_style_struct("InheritedTable", inherited=True) %>
 
     ${single_keyword("border-collapse", "separate collapse")}
 
@@ -2581,13 +2436,13 @@ pub mod longhands {
 
     // CSS Fragmentation Module Level 3
     // https://www.w3.org/TR/css-break-3/
-    ${switch_to_style_struct("Border")}
+    <% data.switch_to_style_struct("Border") %>
 
     ${single_keyword("box-decoration-break", "slice clone", products="gecko")}
 
     // CSS Writing Modes Level 3
     // http://dev.w3.org/csswg/css-writing-modes/
-    ${switch_to_style_struct("InheritedBox")}
+    <% data.switch_to_style_struct("InheritedBox") %>
 
     ${single_keyword("writing-mode", "horizontal-tb vertical-rl vertical-lr", experimental=True)}
 
@@ -2601,15 +2456,15 @@ pub mod longhands {
 
     // CSS Basic User Interface Module Level 3
     // http://dev.w3.org/csswg/css-ui/
-    ${switch_to_style_struct("Box")}
+    <% data.switch_to_style_struct("Box") %>
 
     ${single_keyword("resize", "none both horizontal vertical", products="gecko")}
 
-    ${switch_to_style_struct("Position")}
+    <% data.switch_to_style_struct("Position") %>
 
     ${single_keyword("box-sizing", "content-box border-box")}
 
-    ${new_style_struct("Pointing", is_inherited=True)}
+    <% data.new_style_struct("Pointing", inherited=True) %>
 
     <%self:longhand name="cursor">
         pub use self::computed_value::T as SpecifiedValue;
@@ -2661,7 +2516,7 @@ pub mod longhands {
     ${single_keyword("pointer-events", "auto none")}
 
 
-    ${new_style_struct("Column", is_inherited=False, gecko_name="nsStyleColumn")}
+    <% data.new_style_struct("Column", inherited=False, gecko_ffi_name="nsStyleColumn") %>
 
     <%self:longhand name="column-width" experimental="True">
         use cssparser::ToCss;
@@ -2853,7 +2708,7 @@ pub mod longhands {
     </%self:longhand>
 
     // Box-shadow, etc.
-    ${new_style_struct("Effects", is_inherited=False)}
+    <% data.new_style_struct("Effects", inherited=False) %>
 
     <%self:longhand name="opacity">
         use cssparser::ToCss;
@@ -3257,7 +3112,7 @@ pub mod longhands {
         }
     </%self:longhand>
 
-    ${switch_to_style_struct("InheritedText")}
+    <% data.switch_to_style_struct("InheritedText") %>
 
     <%self:longhand name="text-shadow">
         use cssparser::{self, ToCss};
@@ -3437,7 +3292,7 @@ pub mod longhands {
         }
     </%self:longhand>
 
-    ${switch_to_style_struct("Effects")}
+    <% data.switch_to_style_struct("Effects") %>
 
     <%self:longhand name="filter">
         //pub use self::computed_value::T as SpecifiedValue;
@@ -4383,11 +4238,11 @@ pub mod longhands {
     // CSS Image Values and Replaced Content Module Level 3
     // https://drafts.csswg.org/css-images-3/
 
-    ${switch_to_style_struct("Position")}
+    <% data.switch_to_style_struct("Position") %>
 
     ${single_keyword("object-fit", "fill contain cover none scale-down", products="gecko")}
 
-    ${switch_to_style_struct("InheritedBox")}
+    <% data.switch_to_style_struct("InheritedBox") %>
 
     <%self:longhand name="image-rendering">
 
@@ -4444,7 +4299,7 @@ pub mod longhands {
         }
     </%self:longhand>
 
-    ${switch_to_style_struct("Box")}
+    <% data.switch_to_style_struct("Box") %>
 
     // TODO(pcwalton): Multiple transitions.
     <%self:longhand name="transition-duration">
@@ -4970,7 +4825,7 @@ pub mod longhands {
     // CSS Flexible Box Layout Module Level 1
     // http://www.w3.org/TR/css3-flexbox/
 
-    ${switch_to_style_struct("Position")}
+    <% data.switch_to_style_struct("Position") %>
 
     // Flex container properties
     ${single_keyword("flex-direction", "row row-reverse column column-reverse", experimental=True)}
@@ -5001,7 +4856,7 @@ pub mod longhands {
 
     // SVG 1.1 (Second Edition)
     // https://www.w3.org/TR/SVG/
-    ${new_style_struct("SVG", is_inherited=True)}
+    <% data.new_style_struct("SVG", inherited=True) %>
 
     // Section 10 - Text
     ${single_keyword("dominant-baseline",
@@ -5025,11 +4880,11 @@ pub mod longhands {
 
     ${single_keyword("stroke-linejoin", "miter round bevel", products="gecko")}
 
-    ${switch_to_style_struct("Effects")}
+    <% data.switch_to_style_struct("Effects") %>
 
     ${single_keyword("vector-effect", "none non-scaling-stroke", products="gecko")}
 
-    ${switch_to_style_struct("SVG")}
+    <% data.switch_to_style_struct("SVG") %>
 
     // Section 14 - Clipping, Masking and Compositing
     ${single_keyword("clip-rule", "nonzero evenodd", products="gecko")}
@@ -5043,8 +4898,7 @@ pub mod shorthands {
 
     <%def name="shorthand(name, sub_properties, experimental=False)">
     <%
-        shorthand = Shorthand(name, sub_properties.split(), experimental=experimental)
-        SHORTHANDS.append(shorthand)
+        shorthand = data.declare_shorthand(name, sub_properties.split(), experimental=experimental)
     %>
         pub mod ${shorthand.ident} {
             use cssparser::Parser;
@@ -5756,13 +5610,13 @@ pub mod shorthands {
 mod property_bit_field {
 
     pub struct PropertyBitField {
-        storage: [u32; (${len(LONGHANDS)} - 1 + 32) / 32]
+        storage: [u32; (${len(data.longhands)} - 1 + 32) / 32]
     }
 
     impl PropertyBitField {
         #[inline]
         pub fn new() -> PropertyBitField {
-            PropertyBitField { storage: [0; (${len(LONGHANDS)} - 1 + 32) / 32] }
+            PropertyBitField { storage: [0; (${len(data.longhands)} - 1 + 32) / 32] }
         }
 
         #[inline]
@@ -5773,8 +5627,8 @@ mod property_bit_field {
         fn set(&mut self, bit: usize) {
             self.storage[bit / 32] |= 1 << (bit % 32)
         }
-        % for i, property in enumerate(LONGHANDS):
-            % if property.derived_from is None:
+        % for i, property in enumerate(data.longhands):
+            % if not property.derived_from:
                 #[allow(non_snake_case)]
                 #[inline]
                 pub fn get_${property.ident}(&self) -> bool {
@@ -5790,8 +5644,8 @@ mod property_bit_field {
     }
 }
 
-% for property in LONGHANDS:
-    % if property.derived_from is None:
+% for property in data.longhands:
+    % if not property.derived_from:
         #[allow(non_snake_case)]
         fn substitute_variables_${property.ident}<F>(
             value: &DeclaredValue<longhands::${property.ident}::SpecifiedValue>,
@@ -5840,7 +5694,7 @@ mod property_bit_field {
                             None => {
                                 longhands::${property.ident}::parse_specified(&context, input)
                             }
-                            % for shorthand in SHORTHANDS:
+                            % for shorthand in data.shorthands:
                                 % if property in shorthand.sub_properties:
                                     Some(Shorthand::${shorthand.camel_case}) => {
                                         shorthands::${shorthand.ident}::parse_value(&context, input)
@@ -5960,9 +5814,9 @@ fn deduplicate_property_declarations(declarations: Vec<PropertyDeclaration>)
     let mut seen_custom = Vec::new();
     for declaration in declarations.into_iter().rev() {
         match declaration {
-            % for property in LONGHANDS:
+            % for property in data.longhands:
                 PropertyDeclaration::${property.camel_case}(..) => {
-                    % if property.derived_from is None:
+                    % if not property.derived_from:
                         if seen.get_${property.ident}() {
                             continue
                         }
@@ -6005,7 +5859,7 @@ impl CSSWideKeyword {
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug, HeapSizeOf)]
 pub enum Shorthand {
-    % for property in SHORTHANDS:
+    % for property in data.shorthands:
         ${property.camel_case},
     % endfor
 }
@@ -6013,7 +5867,7 @@ pub enum Shorthand {
 impl Shorthand {
     pub fn from_name(name: &str) -> Option<Shorthand> {
         match_ignore_ascii_case! { name,
-            % for property in SHORTHANDS:
+            % for property in data.shorthands:
                 "${property.name}" => Some(Shorthand::${property.camel_case}),
             % endfor
             _ => None
@@ -6021,7 +5875,7 @@ impl Shorthand {
     }
 
     pub fn longhands(&self) -> &'static [&'static str] {
-        % for property in SHORTHANDS:
+        % for property in data.shorthands:
             static ${property.ident.upper()}: &'static [&'static str] = &[
                 % for sub in property.sub_properties:
                     "${sub.name}",
@@ -6029,7 +5883,7 @@ impl Shorthand {
             ];
         % endfor
         match *self {
-            % for property in SHORTHANDS:
+            % for property in data.shorthands:
                 Shorthand::${property.camel_case} => ${property.ident.upper()},
             % endfor
         }
@@ -6069,7 +5923,7 @@ impl<T: ToCss> ToCss for DeclaredValue<T> {
 
 #[derive(PartialEq, Clone, Debug, HeapSizeOf)]
 pub enum PropertyDeclaration {
-    % for property in LONGHANDS:
+    % for property in data.longhands:
         ${property.camel_case}(DeclaredValue<longhands::${property.ident}::SpecifiedValue>),
     % endfor
     Custom(::custom_properties::Name, DeclaredValue<::custom_properties::SpecifiedValue>),
@@ -6119,8 +5973,8 @@ impl fmt::Display for PropertyDeclarationName {
 impl PropertyDeclaration {
     pub fn name(&self) -> PropertyDeclarationName {
         match *self {
-            % for property in LONGHANDS:
-                % if property.derived_from is None:
+            % for property in data.longhands:
+                % if not property.derived_from:
                     PropertyDeclaration::${property.camel_case}(..) => {
                         PropertyDeclarationName::Longhand("${property.name}")
                     }
@@ -6135,8 +5989,8 @@ impl PropertyDeclaration {
 
     pub fn value(&self) -> String {
         match *self {
-            % for property in LONGHANDS:
-                % if property.derived_from is None:
+            % for property in data.longhands:
+                % if not property.derived_from:
                     PropertyDeclaration::${property.camel_case}(ref value) =>
                         value.to_css_string(),
                 % endif
@@ -6151,7 +6005,7 @@ impl PropertyDeclaration {
     //                                                                          ↓
     pub fn with_variables_from_shorthand(&self, shorthand: Shorthand) -> Option< &str> {
         match *self {
-            % for property in LONGHANDS:
+            % for property in data.longhands:
                 PropertyDeclaration::${property.camel_case}(ref value) => match *value {
                     DeclaredValue::WithVariables { ref css, from_shorthand: Some(s), .. }
                     if s == shorthand => {
@@ -6168,7 +6022,7 @@ impl PropertyDeclaration {
     /// https://drafts.csswg.org/css-variables/#variables-in-shorthands
     pub fn with_variables(&self) -> bool {
         match *self {
-            % for property in LONGHANDS:
+            % for property in data.longhands:
                 PropertyDeclaration::${property.camel_case}(ref value) => match *value {
                     DeclaredValue::WithVariables { .. } => true,
                     _ => false,
@@ -6183,8 +6037,8 @@ impl PropertyDeclaration {
 
     pub fn matches(&self, name: &str) -> bool {
         match *self {
-            % for property in LONGHANDS:
-                % if property.derived_from is None:
+            % for property in data.longhands:
+                % if not property.derived_from:
                     PropertyDeclaration::${property.camel_case}(..) => {
                         name.eq_ignore_ascii_case("${property.name}")
                     }
@@ -6213,8 +6067,8 @@ impl PropertyDeclaration {
             return PropertyDeclarationParseResult::ValidOrIgnoredDeclaration;
         }
         match_ignore_ascii_case! { name,
-            % for property in LONGHANDS:
-                % if property.derived_from is None:
+            % for property in data.longhands:
+                % if not property.derived_from:
                     "${property.name}" => {
                         % if property.internal:
                             if context.stylesheet_origin != Origin::UserAgent {
@@ -6239,7 +6093,7 @@ impl PropertyDeclaration {
                     "${property.name}" => PropertyDeclarationParseResult::UnknownProperty,
                 % endif
             % endfor
-            % for shorthand in SHORTHANDS:
+            % for shorthand in data.shorthands:
                 "${shorthand.name}" => {
                     % if shorthand.internal:
                         if context.stylesheet_origin != Origin::UserAgent {
@@ -6293,7 +6147,7 @@ impl PropertyDeclaration {
 pub mod style_struct_traits {
     use super::longhands;
 
-    % for style_struct in active_style_structs():
+    % for style_struct in data.active_style_structs():
         pub trait ${style_struct.trait_name}: Clone {
             % for longhand in style_struct.longhands:
                 #[allow(non_snake_case)]
@@ -6314,7 +6168,7 @@ pub mod style_structs {
     use super::longhands;
     use std::hash::{Hash, Hasher};
 
-    % for style_struct in active_style_structs():
+    % for style_struct in data.active_style_structs():
         % if style_struct.trait_name == "Font":
         #[derive(Clone, HeapSizeOf, Debug)]
         % else:
@@ -6430,7 +6284,7 @@ pub mod style_structs {
 }
 
 pub trait ComputedValues : Clone + Send + Sync + 'static {
-    % for style_struct in active_style_structs():
+    % for style_struct in data.active_style_structs():
         type Concrete${style_struct.trait_name}: style_struct_traits::${style_struct.trait_name};
     % endfor
 
@@ -6445,7 +6299,7 @@ pub trait ComputedValues : Clone + Send + Sync + 'static {
                shareable: bool,
                writing_mode: WritingMode,
                root_font_size: Au,
-        % for style_struct in active_style_structs():
+        % for style_struct in data.active_style_structs():
                ${style_struct.ident}: Arc<Self::Concrete${style_struct.trait_name}>,
         % endfor
         ) -> Self;
@@ -6454,7 +6308,7 @@ pub trait ComputedValues : Clone + Send + Sync + 'static {
 
         fn do_cascade_property<F: FnOnce(&Vec<Option<CascadePropertyFn<Self>>>)>(f: F);
 
-    % for style_struct in active_style_structs():
+    % for style_struct in data.active_style_structs():
         fn clone_${style_struct.trait_name_lower}(&self) ->
             Arc<Self::Concrete${style_struct.trait_name}>;
         fn get_${style_struct.trait_name_lower}<'a>(&'a self) ->
@@ -6472,7 +6326,7 @@ pub trait ComputedValues : Clone + Send + Sync + 'static {
 
 #[derive(Clone, HeapSizeOf)]
 pub struct ServoComputedValues {
-    % for style_struct in active_style_structs():
+    % for style_struct in data.active_style_structs():
         ${style_struct.ident}: Arc<style_structs::${style_struct.servo_struct_name}>,
     % endfor
     custom_properties: Option<Arc<::custom_properties::ComputedValuesMap>>,
@@ -6482,7 +6336,7 @@ pub struct ServoComputedValues {
 }
 
 impl ComputedValues for ServoComputedValues {
-    % for style_struct in active_style_structs():
+    % for style_struct in data.active_style_structs():
         type Concrete${style_struct.trait_name} = style_structs::${style_struct.servo_struct_name};
     % endfor
 
@@ -6493,7 +6347,7 @@ impl ComputedValues for ServoComputedValues {
                shareable: bool,
                writing_mode: WritingMode,
                root_font_size: Au,
-            % for style_struct in active_style_structs():
+            % for style_struct in data.active_style_structs():
                ${style_struct.ident}: Arc<style_structs::${style_struct.servo_struct_name}>,
             % endfor
         ) -> Self {
@@ -6502,7 +6356,7 @@ impl ComputedValues for ServoComputedValues {
                 shareable: shareable,
                 writing_mode: writing_mode,
                 root_font_size: root_font_size,
-            % for style_struct in active_style_structs():
+            % for style_struct in data.active_style_structs():
                 ${style_struct.ident}: ${style_struct.ident},
             % endfor
             }
@@ -6514,7 +6368,7 @@ impl ComputedValues for ServoComputedValues {
             CASCADE_PROPERTY.with(|x| f(x));
         }
 
-    % for style_struct in active_style_structs():
+    % for style_struct in data.active_style_structs():
         #[inline]
         fn clone_${style_struct.trait_name_lower}(&self) ->
             Arc<Self::Concrete${style_struct.trait_name}> {
@@ -6716,7 +6570,7 @@ impl ServoComputedValues {
 
     pub fn computed_value_to_string(&self, name: &str) -> Result<String, ()> {
         match name {
-            % for style_struct in active_style_structs():
+            % for style_struct in data.active_style_structs():
                 % for longhand in style_struct.longhands:
                 "${longhand.name}" => Ok(self.${style_struct.ident}.${longhand.ident}.to_css_string()),
                 % endfor
@@ -6770,7 +6624,7 @@ pub fn get_writing_mode<S: style_struct_traits::InheritedBox>(inheritedbox_style
 /// The initial values for all style structs as defined by the specification.
 lazy_static! {
     pub static ref INITIAL_SERVO_VALUES: ServoComputedValues = ServoComputedValues {
-        % for style_struct in active_style_structs():
+        % for style_struct in data.active_style_structs():
             ${style_struct.ident}: Arc::new(style_structs::${style_struct.servo_struct_name} {
                 % for longhand in style_struct.longhands:
                     ${longhand.ident}: longhands::${longhand.ident}::get_initial_value(),
@@ -6808,7 +6662,7 @@ fn cascade_with_cached_declarations<C: ComputedValues>(
             shareable,
             WritingMode::empty(),
             parent_style.root_font_size(),
-            % for style_struct in active_style_structs():
+            % for style_struct in data.active_style_structs():
                 % if style_struct.inherited:
                     parent_style
                 % else:
@@ -6825,9 +6679,9 @@ fn cascade_with_cached_declarations<C: ComputedValues>(
         // Declarations are already stored in reverse order.
         for declaration in sub_list.declarations.iter() {
             match *declaration {
-                % for style_struct in active_style_structs():
+                % for style_struct in data.active_style_structs():
                     % for property in style_struct.longhands:
-                        % if property.derived_from is None:
+                        % if not property.derived_from:
                             PropertyDeclaration::${property.camel_case}(ref
                                     ${'_' if not style_struct.inherited else ''}declared_value)
                                     => {
@@ -6868,8 +6722,8 @@ fn cascade_with_cached_declarations<C: ComputedValues>(
                                     );
                                 % endif
 
-                                % if property.name in DERIVED_LONGHANDS:
-                                    % for derived in DERIVED_LONGHANDS[property.name]:
+                                % if property.name in data.derived_longhands:
+                                    % for derived in data.derived_longhands[property.name]:
                                             longhands::${derived.ident}
                                                      ::derive_from_${property.ident}(&mut context);
                                     % endfor
@@ -6906,7 +6760,7 @@ pub type CascadePropertyFn<C /*: ComputedValues */> =
 
 pub fn make_cascade_vec<C: ComputedValues>() -> Vec<Option<CascadePropertyFn<C>>> {
     let mut result: Vec<Option<CascadePropertyFn<C>>> = Vec::new();
-    % for style_struct in active_style_structs():
+    % for style_struct in data.active_style_structs():
         % for property in style_struct.longhands:
             let discriminant;
             unsafe {
@@ -7001,7 +6855,7 @@ pub fn cascade<C: ComputedValues>(
             shareable,
             WritingMode::empty(),
             inherited_style.root_font_size(),
-            % for style_struct in active_style_structs():
+            % for style_struct in data.active_style_structs():
             % if style_struct.inherited:
             inherited_style
             % else:
@@ -7319,7 +7173,7 @@ pub fn modify_style_for_inline_absolute_hypothetical_fragment(style: &mut Arc<Se
 
 pub fn is_supported_property(property: &str) -> bool {
     match_ignore_ascii_case! { property,
-        % for property in SHORTHANDS + LONGHANDS:
+        % for property in data.shorthands + data.longhands:
             "${property.name}" => true,
         % endfor
         _ => property.starts_with("--")
@@ -7330,12 +7184,12 @@ pub fn is_supported_property(property: &str) -> bool {
 macro_rules! css_properties_accessors {
     ($macro_name: ident) => {
         $macro_name! {
-            % for property in SHORTHANDS + LONGHANDS:
-                % if property.derived_from is None and not property.internal:
+            % for property in data.shorthands + data.longhands:
+                % if not property.derived_from and not property.internal:
                     % if '-' in property.name:
                         [${property.ident.capitalize()}, Set${property.ident.capitalize()}, "${property.name}"],
                     % endif
-                    % if property != LONGHANDS[-1]:
+                    % if property != data.longhands[-1]:
                         [${property.camel_case}, Set${property.camel_case}, "${property.name}"],
                     % else:
                         [${property.camel_case}, Set${property.camel_case}, "${property.name}"]
@@ -7350,7 +7204,7 @@ macro_rules! css_properties_accessors {
 macro_rules! longhand_properties_idents {
     ($macro_name: ident) => {
         $macro_name! {
-            % for property in LONGHANDS:
+            % for property in data.longhands:
                 ${property.ident}
             % endfor
         }
