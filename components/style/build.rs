@@ -30,9 +30,12 @@ fn find_python() -> String {
 
 fn main() {
     let python = env::var("PYTHON").ok().unwrap_or_else(find_python);
+    let script = Path::new(file!()).parent().unwrap().join("properties").join("build.py");
     let product = if cfg!(feature = "gecko") { "gecko" } else { "servo" };
     let status = Command::new(python)
-        .args(&["build_properties_rs.py", product, "rust"])
+        .arg(&script)
+        .arg(product)
+        .arg("rust")
         .status()
         .unwrap();
     if !status.success() {
